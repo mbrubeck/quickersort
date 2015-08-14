@@ -115,60 +115,66 @@ pub fn insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
 
 fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, usize, usize, usize, usize),
                                                  compare: &C, rec: u32, heapsort_depth: u32) {
-    let (_, p1, _, p2, _) = pivots;
-    let n = v.len();
-
-    let lp = 0;
-    let rp = n - 1;
-
-    v.swap(p1, lp);
-    v.swap(p2, rp);
-
-    let mut lesser = 1;
-    let mut greater = n - 2;
-
     unsafe {
-        // Skip elements that are already in the correct position
-        while compare_idxs(v, lesser, lp, compare) == Less { lesser += 1; }
-        while compare_idxs(v, greater, rp, compare) == Greater { greater -= 1; }
+        let n = v.len();
+        let (_, p1, _, p2, _) = pivots;
 
-        let mut k = lesser;
-        // XXX We make some unecessary swaps since we can't leave uninitialized values
-        // in `v` in case `compare` unwinds.
-        while k <= greater {
-            if compare_idxs(v, k, lp, compare) == Less {
-                unsafe_swap(v, k, lesser);
-                lesser += 1;
-            } else {
-                let cmp = compare_idxs(v, k, rp, compare);
-                if cmp == Greater || cmp == Equal {
-                    while k < greater && compare_idxs(v, greater, rp, compare) == Greater {
-                        greater -= 1;
-                    }
-                    unsafe_swap(v, k, greater);
-                    greater -= 1;
-                    if compare_idxs(v, k, lp, compare) == Less {
-                        unsafe_swap(v, k, lesser);
-                        lesser += 1;
+        let mut less = 0;
+        let mut great = n - 1;
+
+        let pivot1 = ptr::read(v.get_unchecked(p1));
+        let pivot2 = ptr::read(v.get_unchecked(p2));
+
+        // The first and last elements to be sorted are moved to the locations formerly occupied by the
+        // pivots. When partitioning is complete, they are swapped back, and not sorted again.
+        ptr::copy(v.get_unchecked(less), v.get_unchecked_mut(p1), 1);
+        ptr::copy(v.get_unchecked(great), v.get_unchecked_mut(p2), 1);
+
+        // Skip elements which are less or greater than the pivot values.
+        less += 1;
+        while compare(v.get_unchecked(less), &pivot1) == Less { less += 1; }
+        great -= 1;
+        while compare(v.get_unchecked(great), &pivot2) == Greater { great -= 1; }
+
+        // Partitioning
+        let mut k = less;
+        'outer: while k <= great {
+            let vk = ptr::read(v.get_unchecked(k));
+            if compare(&vk, &pivot1) == Less {
+                ptr::copy(v.get_unchecked(less), v.get_unchecked_mut(k), 1);
+                ptr::copy(&vk, v.get_unchecked_mut(less), 1);
+                less += 1;
+            } else if compare(&vk, &pivot2) == Greater {
+                while compare(v.get_unchecked(great), &pivot2) == Greater {
+                    great -= 1;
+                    if great < k {
+                        break 'outer;
                     }
                 }
+                if compare(v.get_unchecked(great), &pivot1) == Less {
+                    ptr::copy(v.get_unchecked(less), v.get_unchecked_mut(k), 1);
+                    ptr::copy(v.get_unchecked(great), v.get_unchecked_mut(less), 1);
+                    less += 1;
+                } else {
+                    ptr::copy(v.get_unchecked(great), v.get_unchecked_mut(k), 1);
+                }
+                ptr::copy(&vk, v.get_unchecked_mut(great), 1);
+                great -= 1;
             }
             k += 1;
         }
+
+        // Swap back the pivots.
+        ptr::copy(v.get_unchecked(less - 1), v.get_unchecked_mut(0), 1);
+        ptr::copy(&pivot1, v.get_unchecked_mut(less - 1), 1);
+        ptr::copy(v.get_unchecked(great + 1), v.get_unchecked_mut(n - 1), 1);
+        ptr::copy(&pivot2, v.get_unchecked_mut(great + 1), 1);
+
+        // Sort the left, right, and center parts.
+        introsort(&mut v[..less - 1], compare, rec + 1, heapsort_depth);
+        introsort(&mut v[less..great + 1], compare, rec + 1, heapsort_depth);
+        introsort(&mut v[great + 2..], compare, rec + 1, heapsort_depth);
     }
-
-    lesser -= 1;
-    greater += 1;
-
-    // Swap back pivots
-    unsafe {
-        unsafe_swap(v, lp, lesser);
-        unsafe_swap(v, rp, greater);
-    }
-
-    introsort(&mut v[..lesser], compare, rec + 1, heapsort_depth);
-    introsort(&mut v[lesser+1..greater], compare, rec + 1, heapsort_depth);
-    introsort(&mut v[greater+1..], compare, rec + 1, heapsort_depth);
 }
 
 fn single_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, compare: &C, rec: u32, heapsort_depth: u32) {
