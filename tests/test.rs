@@ -5,6 +5,8 @@ extern crate itertools;
 use quickersort::{sort_by, insertion_sort, heapsort};
 use rand::{Rng, weak_rng};
 use itertools::Itertools;
+use std::cmp::Ordering::*;
+use std::thread;
 
 macro_rules! do_test_sort(
     ($sortfun:ident) => ({
@@ -16,6 +18,7 @@ macro_rules! do_test_sort(
                                         .collect::<Vec<usize>>();
                 let mut v1 = v.clone();
                 let mut v_b: Vec<Box<usize>> = (&v).into_iter().map(|x| Box::new(*x)).collect();
+                let mut v_b2 = v_b.clone();
 
                 $sortfun(&mut v[..], &cmp);
                 assert!(v.windows(2).all(|w| w[0] <= w[1]));
@@ -28,6 +31,14 @@ macro_rules! do_test_sort(
 
                 $sortfun(&mut v_b[..], &|a: &Box<usize>, b: &Box<usize>| (&**a).cmp(&**b));
                 assert!(v_b.windows(2).all(|w| w[0] <= w[1]));
+
+                // Test scrambled comparator.
+                $sortfun(&mut v_b[..], &|_, _| if weak_rng().gen_iter::<bool>().take(1).next().unwrap() { Less } else { Greater });
+
+                // Test panic safety. If it's not panic-safe, then the Box destructor will SEGV.
+                let _ = thread::spawn(move || {
+                    $sortfun(&mut v_b2, &|a, _| { if **a > 20 { panic!("Expected panic: this is normal") } else { Less } });
+                }).join().err().unwrap();
             }
         }
         // shouldn't fail/crash
