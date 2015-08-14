@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
-use std::mem::{size_of, swap};
+use std::mem::{size_of, swap, uninitialized};
 use std::ptr;
 use unreachable::UncheckedOptionExt;
 
@@ -119,13 +119,17 @@ pub fn insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
 //  - Do not modify the state of the RAII guard until you're done compare()ing.
 //  - Do not modify the vector until you're done compare()ing.
 
+struct DualPivots<T> {
+    pivot1: T,
+    pivot2: T,
+    vk: T,
+}
+
 struct DualPivotSort<'a, T: 'a> {
     v: &'a mut [T],
-    pivot1: Option<T>,
-    pivot2: Option<T>,
+    pivots: Option<DualPivots<T>>,
     less: usize,
     great: usize,
-    vk: Option<T>,
 }
 
 impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
@@ -133,12 +137,10 @@ impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
         let n = self.v.len();
         unsafe {
             ptr::copy(self.v.get_unchecked(self.less - 1), self.v.get_unchecked_mut(0), 1);
-            ptr::copy(self.pivot1.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.less - 1), 1);
+            ptr::copy(&self.pivots.as_ref().unchecked_unwrap().pivot1, self.v.get_unchecked_mut(self.less - 1), 1);
             ptr::copy(self.v.get_unchecked(self.great + 1), self.v.get_unchecked_mut(n - 1), 1);
-            ptr::copy(self.pivot2.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.great + 1), 1);
-            ptr::write(&mut self.pivot1, None);
-            ptr::write(&mut self.pivot2, None);
-            ptr::write(&mut self.vk, None);
+            ptr::copy(&self.pivots.as_ref().unchecked_unwrap().pivot2, self.v.get_unchecked_mut(self.great + 1), 1);
+            ptr::write(&mut self.pivots, None);
         }
     }
 }
@@ -150,12 +152,14 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
         let (_, p1, _, p2, _) = pivots;
 
         let mut this = DualPivotSort{
-            pivot1: Some(ptr::read(v.get_unchecked(p1))),
-            pivot2: Some(ptr::read(v.get_unchecked(p2))),
+            pivots: Some(DualPivots{
+                pivot1: ptr::read(v.get_unchecked(p1)),
+                pivot2: ptr::read(v.get_unchecked(p2)),
+                vk: uninitialized(),
+            }),
             less: 0,
             great: n - 1,
             v: v,
-            vk: None
         };
 
         // The first and last elements to be sorted are moved to the locations formerly occupied by the
@@ -165,33 +169,33 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
 
         // Skip elements which are less or greater than the pivot values.
         this.less += 1;
-        while compare(this.v.get_unchecked(this.less), this.pivot1.as_ref().unchecked_unwrap()) == Less { this.less += 1; }
+        while compare(this.v.get_unchecked(this.less), &this.pivots.as_ref().unchecked_unwrap().pivot1) == Less { this.less += 1; }
         this.great -= 1;
-        while compare(this.v.get_unchecked(this.great), this.pivot2.as_ref().unchecked_unwrap()) == Greater { this.great -= 1; }
+        while compare(this.v.get_unchecked(this.great), &this.pivots.as_ref().unchecked_unwrap().pivot2) == Greater { this.great -= 1; }
 
         // Partitioning
         let mut k = this.less;
         'outer: while k <= this.great {
-            ptr::write(&mut this.vk, Some(ptr::read(this.v.get_unchecked(k))));
-            if compare(this.vk.as_ref().unchecked_unwrap(), this.pivot1.as_ref().unchecked_unwrap()) == Less {
+            ptr::write(&mut this.pivots.as_mut().unchecked_unwrap().vk, ptr::read(this.v.get_unchecked(k)));
+            if compare(&this.pivots.as_ref().unchecked_unwrap().vk, &this.pivots.as_ref().unchecked_unwrap().pivot1) == Less {
                 ptr::copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k), 1);
-                ptr::copy(this.vk.as_ref().unchecked_unwrap(), this.v.get_unchecked_mut(this.less), 1);
+                ptr::copy(&this.pivots.as_ref().unchecked_unwrap().vk, this.v.get_unchecked_mut(this.less), 1);
                 this.less += 1;
-            } else if compare(this.vk.as_ref().unchecked_unwrap(), this.pivot2.as_ref().unchecked_unwrap()) == Greater {
-                while compare(this.v.get_unchecked(this.great), this.pivot2.as_ref().unchecked_unwrap()) == Greater {
+            } else if compare(&this.pivots.as_ref().unchecked_unwrap().vk, &this.pivots.as_ref().unchecked_unwrap().pivot2) == Greater {
+                while compare(this.v.get_unchecked(this.great), &this.pivots.as_ref().unchecked_unwrap().pivot2) == Greater {
                     this.great -= 1;
                     if this.great < k {
                         break 'outer;
                     }
                 }
-                if compare(this.v.get_unchecked(this.great), this.pivot1.as_ref().unchecked_unwrap()) == Less {
+                if compare(this.v.get_unchecked(this.great), &this.pivots.as_ref().unchecked_unwrap().pivot1) == Less {
                     ptr::copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k), 1);
                     ptr::copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less), 1);
                     this.less += 1;
                 } else {
                     ptr::copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(k), 1);
                 }
-                ptr::copy(this.vk.as_ref().unchecked_unwrap(), this.v.get_unchecked_mut(this.great), 1);
+                ptr::copy(&this.pivots.as_ref().unchecked_unwrap().vk, this.v.get_unchecked_mut(this.great), 1);
                 this.great -= 1;
             }
             k += 1;
