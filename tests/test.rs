@@ -15,6 +15,7 @@ macro_rules! do_test_sort(
                 let mut v = weak_rng().gen_iter::<u8>().take(len).map(|x| 10 + (x % 89) as usize)
                                         .collect::<Vec<usize>>();
                 let mut v1 = v.clone();
+                let mut v_b: Vec<Box<usize>> = (&v).into_iter().map(|x| Box::new(*x)).collect();
 
                 $sortfun(&mut v[..], &cmp);
                 assert!(v.windows(2).all(|w| w[0] <= w[1]));
@@ -24,6 +25,9 @@ macro_rules! do_test_sort(
 
                 $sortfun(&mut v1[..], &cmp_rev);
                 assert!(v1.windows(2).all(|w| w[0] >= w[1]));
+
+                $sortfun(&mut v_b[..], &|a: &Box<usize>, b: &Box<usize>| (&**a).cmp(&**b));
+                assert!(v_b.windows(2).all(|w| w[0] <= w[1]));
             }
         }
         // shouldn't fail/crash
