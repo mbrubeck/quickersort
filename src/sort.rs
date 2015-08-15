@@ -2,8 +2,14 @@ use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
 use std::mem::{size_of, swap, uninitialized};
+use std::ops::{Deref, DerefMut};
 use std::ptr;
-use unreachable::UncheckedOptionExt;
+use unreachable::{UncheckedOptionExt, unreachable};
+
+#[inline(always)]
+unsafe fn copy<T>(a: *const T, b: *mut T) {
+    ptr::write(b, ptr::read(a))
+}
 
 /// The smallest number of elements that may be quicksorted.
 /// Must be at least 9.
@@ -113,34 +119,54 @@ pub fn insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
     }
 }
 
-// You've seen unsafe code, but you've never seen anything as crazy as this. Here's the rules:
-//  - Do not call anything but compare() that can panic. No allocation, no unwraps that cannot be
-//    locally guaranteed to work.
-//  - Do not modify the state of the RAII guard until you're done compare()ing.
-//  - Do not modify the vector until you're done compare()ing.
-
-struct DualPivots<T> {
+struct DualPivotSortData<'a, T: 'a> {
+    v: &'a mut [T],
+    less: usize,
+    great: usize,
     pivot1: T,
     pivot2: T,
     vk: T,
 }
 
-struct DualPivotSort<'a, T: 'a> {
-    v: &'a mut [T],
-    pivots: Option<DualPivots<T>>,
-    less: usize,
-    great: usize,
+enum DualPivotSort<'a, T: 'a> {
+    None,
+    Some(DualPivotSortData<'a, T>),
+}
+
+impl<'a, T: 'a> Deref for DualPivotSort<'a, T> {
+    type Target = DualPivotSortData<'a, T>;
+    #[inline(always)]
+    fn deref(&self) -> &DualPivotSortData<'a, T> {
+        match self {
+            &DualPivotSort::None => unsafe { unreachable() },
+            &DualPivotSort::Some(ref x) => x,
+        }
+    }
+}
+
+impl<'a, T: 'a> DerefMut for DualPivotSort<'a, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut DualPivotSortData<'a, T> {
+        match self {
+            &mut DualPivotSort::None => unsafe { unreachable() },
+            &mut DualPivotSort::Some(ref mut x) => x,
+        }
+    }
 }
 
 impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
+    #[inline(always)]
     fn drop(&mut self) {
         let n = self.v.len();
         unsafe {
-            ptr::copy(self.v.get_unchecked(self.less - 1), self.v.get_unchecked_mut(0), 1);
-            ptr::copy(&self.pivots.as_ref().unchecked_unwrap().pivot1, self.v.get_unchecked_mut(self.less - 1), 1);
-            ptr::copy(self.v.get_unchecked(self.great + 1), self.v.get_unchecked_mut(n - 1), 1);
-            ptr::copy(&self.pivots.as_ref().unchecked_unwrap().pivot2, self.v.get_unchecked_mut(self.great + 1), 1);
-            ptr::write(&mut self.pivots, None);
+            let mut this: &mut DualPivotSortData<'a, T> = &mut *self;
+            copy(this.v.get_unchecked(this.less - 1), this.v.get_unchecked_mut(0));
+            copy(&this.pivot1, this.v.get_unchecked_mut(this.less - 1));
+            copy(this.v.get_unchecked(this.great + 1), this.v.get_unchecked_mut(n - 1));
+            copy(&this.pivot2, this.v.get_unchecked_mut(this.great + 1));
+        }
+        unsafe {
+            ptr::write(self, DualPivotSort::None);
         }
     }
 }
@@ -151,51 +177,50 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
         let n = v.len();
         let (_, p1, _, p2, _) = pivots;
 
-        let mut this = DualPivotSort{
-            pivots: Some(DualPivots{
-                pivot1: ptr::read(v.get_unchecked(p1)),
-                pivot2: ptr::read(v.get_unchecked(p2)),
-                vk: uninitialized(),
-            }),
+        let mut this_ = DualPivotSort::Some(DualPivotSortData{
+            pivot1: ptr::read(v.get_unchecked(p1)),
+            pivot2: ptr::read(v.get_unchecked(p2)),
+            vk: uninitialized(),
             less: 0,
             great: n - 1,
             v: v,
-        };
+        });
+        let mut this: &mut DualPivotSortData<T> = &mut *this_;
 
         // The first and last elements to be sorted are moved to the locations formerly occupied by the
         // pivots. When partitioning is complete, they are swapped back, and not sorted again.
-        ptr::copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(p1), 1);
-        ptr::copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(p2), 1);
+        copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(p1));
+        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(p2));
 
         // Skip elements which are less or greater than the pivot values.
         this.less += 1;
-        while compare(this.v.get_unchecked(this.less), &this.pivots.as_ref().unchecked_unwrap().pivot1) == Less { this.less += 1; }
+        while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
         this.great -= 1;
-        while compare(this.v.get_unchecked(this.great), &this.pivots.as_ref().unchecked_unwrap().pivot2) == Greater { this.great -= 1; }
+        while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
 
         // Partitioning
         let mut k = this.less;
         'outer: while k <= this.great {
-            ptr::write(&mut this.pivots.as_mut().unchecked_unwrap().vk, ptr::read(this.v.get_unchecked(k)));
-            if compare(&this.pivots.as_ref().unchecked_unwrap().vk, &this.pivots.as_ref().unchecked_unwrap().pivot1) == Less {
-                ptr::copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k), 1);
-                ptr::copy(&this.pivots.as_ref().unchecked_unwrap().vk, this.v.get_unchecked_mut(this.less), 1);
+            ptr::write(&mut this.vk, ptr::read(this.v.get_unchecked(k)));
+            if compare(&this.vk, &this.pivot1) == Less {
+                copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
+                copy(&this.vk, this.v.get_unchecked_mut(this.less));
                 this.less += 1;
-            } else if compare(&this.pivots.as_ref().unchecked_unwrap().vk, &this.pivots.as_ref().unchecked_unwrap().pivot2) == Greater {
-                while compare(this.v.get_unchecked(this.great), &this.pivots.as_ref().unchecked_unwrap().pivot2) == Greater {
+            } else if compare(&this.vk, &this.pivot2) == Greater {
+                while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater {
                     this.great -= 1;
                     if this.great < k {
                         break 'outer;
                     }
                 }
-                if compare(this.v.get_unchecked(this.great), &this.pivots.as_ref().unchecked_unwrap().pivot1) == Less {
-                    ptr::copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k), 1);
-                    ptr::copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less), 1);
+                if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
+                    copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
+                    copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
                     this.less += 1;
                 } else {
-                    ptr::copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(k), 1);
+                    copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(k));
                 }
-                ptr::copy(&this.pivots.as_ref().unchecked_unwrap().vk, this.v.get_unchecked_mut(this.great), 1);
+                copy(&this.vk, this.v.get_unchecked_mut(this.great));
                 this.great -= 1;
             }
             k += 1;
@@ -323,7 +348,7 @@ impl<'a, T: 'a> Siftup<'a, T> {
 impl<'a, T: 'a> Drop for Siftup<'a, T> {
     fn drop(&mut self) {
         unsafe {
-            ptr::copy(self.new.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.pos), 1);
+            copy(self.new.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.pos));
             ptr::write(&mut self.new, None);
         }
     }
@@ -391,7 +416,7 @@ impl<'a, T: 'a> Siftdown<'a, T> {
 impl<'a, T: 'a> Drop for Siftdown<'a, T> {
     fn drop(&mut self) {
         unsafe {
-            ptr::copy(self.new.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.pos), 1);
+            copy(self.new.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.pos));
             ptr::write(&mut self.new, None);
         }
     }
