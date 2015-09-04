@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
-use std::mem::{size_of, swap, uninitialized};
+use std::mem::{size_of, swap, uninitialized, forget};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use unreachable::{UncheckedOptionExt, unreachable};
@@ -133,6 +133,25 @@ enum DualPivotSort<'a, T: 'a> {
     Some(DualPivotSortData<'a, T>),
 }
 
+impl<'a, T: 'a> DualPivotSort<'a, T> {
+    #[inline(always)]
+    fn new(this: DualPivotSortData<'a, T>) -> Self {
+        DualPivotSort::Some(this)
+    }
+
+    #[inline(always)]
+    fn done(&mut self) {
+        let n = self.v.len();
+        unsafe {
+            let mut this: &mut DualPivotSortData<'a, T> = &mut *self;
+            copy(this.v.get_unchecked(this.less - 1), this.v.get_unchecked_mut(0));
+            copy(&this.pivot1, this.v.get_unchecked_mut(this.less - 1));
+            copy(this.v.get_unchecked(this.great + 1), this.v.get_unchecked_mut(n - 1));
+            copy(&this.pivot2, this.v.get_unchecked_mut(this.great + 1));
+        }
+    }
+}
+
 impl<'a, T: 'a> Deref for DualPivotSort<'a, T> {
     type Target = DualPivotSortData<'a, T>;
     #[inline(always)]
@@ -157,14 +176,7 @@ impl<'a, T: 'a> DerefMut for DualPivotSort<'a, T> {
 impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
     #[inline(always)]
     fn drop(&mut self) {
-        let n = self.v.len();
-        unsafe {
-            let mut this: &mut DualPivotSortData<'a, T> = &mut *self;
-            copy(this.v.get_unchecked(this.less - 1), this.v.get_unchecked_mut(0));
-            copy(&this.pivot1, this.v.get_unchecked_mut(this.less - 1));
-            copy(this.v.get_unchecked(this.great + 1), this.v.get_unchecked_mut(n - 1));
-            copy(&this.pivot2, this.v.get_unchecked_mut(this.great + 1));
-        }
+        self.done();
         unsafe {
             ptr::write(self, DualPivotSort::None);
         }
@@ -173,11 +185,12 @@ impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
 
 fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, usize, usize, usize, usize),
                                                  compare: &C, rec: u32, heapsort_depth: u32) {
-    let (less, great) = unsafe {
-        let n = v.len();
-        let (_, p1, _, p2, _) = pivots;
+    let n = v.len();
+    let (_, p1, _, p2, _) = pivots;
+    let (less, great);
 
-        let mut this_ = DualPivotSort::Some(DualPivotSortData{
+    unsafe {
+        let mut this = DualPivotSort::new(DualPivotSortData{
             pivot1: ptr::read(v.get_unchecked(p1)),
             pivot2: ptr::read(v.get_unchecked(p2)),
             vk: uninitialized(),
@@ -185,50 +198,53 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
             great: n - 1,
             v: v,
         });
-        let mut this: &mut DualPivotSortData<T> = &mut *this_;
+        {
+            let mut this: &mut DualPivotSortData<T> = &mut *this;
 
-        // The first and last elements to be sorted are moved to the locations formerly occupied by the
-        // pivots. When partitioning is complete, they are swapped back, and not sorted again.
-        copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(p1));
-        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(p2));
+            // The first and last elements to be sorted are moved to the locations formerly occupied by the
+            // pivots. When partitioning is complete, they are swapped back, and not sorted again.
+            copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(p1));
+            copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(p2));
 
-        // Skip elements which are less or greater than the pivot values.
-        this.less += 1;
-        while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
-        this.great -= 1;
-        while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
+            // Skip elements which are less or greater than the pivot values.
+            this.less += 1;
+            while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
+            this.great -= 1;
+            while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
 
-        // Partitioning
-        let mut k = this.less;
-        'outer: while k <= this.great {
-            ptr::write(&mut this.vk, ptr::read(this.v.get_unchecked(k)));
-            if compare(&this.vk, &this.pivot1) == Less {
-                copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
-                copy(&this.vk, this.v.get_unchecked_mut(this.less));
-                this.less += 1;
-            } else if compare(&this.vk, &this.pivot2) == Greater {
-                while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater {
-                    this.great -= 1;
-                    if this.great < k {
-                        break 'outer;
-                    }
-                }
-                if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
+            // Partitioning
+            let mut k = this.less;
+            'outer: while k <= this.great {
+                ptr::write(&mut this.vk, ptr::read(this.v.get_unchecked(k)));
+                if compare(&this.vk, &this.pivot1) == Less {
                     copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
-                    copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
+                    copy(&this.vk, this.v.get_unchecked_mut(this.less));
                     this.less += 1;
-                } else {
-                    copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(k));
+                } else if compare(&this.vk, &this.pivot2) == Greater {
+                    while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater {
+                        this.great -= 1;
+                        if this.great < k {
+                            break 'outer;
+                        }
+                    }
+                    if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
+                        copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
+                        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
+                        this.less += 1;
+                    } else {
+                        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(k));
+                    }
+                    copy(&this.vk, this.v.get_unchecked_mut(this.great));
+                    this.great -= 1;
                 }
-                copy(&this.vk, this.v.get_unchecked_mut(this.great));
-                this.great -= 1;
+                k += 1;
             }
-            k += 1;
+            less = this.less;
+            great = this.great;
         }
-
-        // The pivots are swapped back when this is dropped.
-        (this.less, this.great)
-    };
+        this.done();
+        forget(this);
+    }
 
     // Sort the left, right, and center parts.
     introsort(&mut v[..less - 1], compare, rec + 1, heapsort_depth);
