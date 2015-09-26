@@ -208,25 +208,19 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
 
             // Skip elements which are less or greater than the pivot values.
             this.less += 1;
-            while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
             this.great -= 1;
+            while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
             while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
 
             // Partitioning
             let mut k = this.less;
-            'outer: while k <= this.great {
-                ptr::write(&mut this.vk, ptr::read(this.v.get_unchecked(k)));
+            while k <= this.great {
+                copy(this.v.get_unchecked(k), &mut this.vk);
                 if compare(&this.vk, &this.pivot1) == Less {
                     copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
                     copy(&this.vk, this.v.get_unchecked_mut(this.less));
                     this.less += 1;
                 } else if compare(&this.vk, &this.pivot2) == Greater {
-                    while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater {
-                        this.great -= 1;
-                        if this.great < k {
-                            break 'outer;
-                        }
-                    }
                     if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
                         copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
                         copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
@@ -236,6 +230,7 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
                     }
                     copy(&this.vk, this.v.get_unchecked_mut(this.great));
                     this.great -= 1;
+                    while k < this.great && compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
                 }
                 k += 1;
             }
@@ -351,8 +346,7 @@ impl<'a, T: 'a> Siftup<'a, T> {
             };
             let mut parent = this.pos.wrapping_sub(1) / 4;
             while this.pos > start && compare(this.new.as_ref().unchecked_unwrap(), this.v.get_unchecked(parent)) == Greater {
-                let x = ptr::read(this.v.get_unchecked_mut(parent));
-                ptr::write(this.v.get_unchecked_mut(this.pos), x);
+                copy(this.v.get_unchecked(parent), this.v.get_unchecked_mut(this.pos));
                 this.pos = parent;
                 parent = this.pos.wrapping_sub(1) / 4;
             }
@@ -405,15 +399,13 @@ impl<'a, T: 'a> Siftdown<'a, T> {
                 } else {
                     largest_left
                 };
-                let x = ptr::read(this.v.get_unchecked_mut(child));
-                ptr::write(this.v.get_unchecked_mut(this.pos), x);
+                copy(this.v.get_unchecked(child), this.v.get_unchecked_mut(this.pos));
                 this.pos = child;
                 m_left = 4 * this.pos + 2;
             }
             let left = m_left - 1;
             if left < end {
-                let x = ptr::read(this.v.get_unchecked_mut(left));
-                ptr::write(this.v.get_unchecked_mut(this.pos), x);
+                copy(this.v.get_unchecked(left), this.v.get_unchecked_mut(this.pos));
                 this.pos = left;
             }
 
