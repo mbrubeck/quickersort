@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
-use std::mem::{size_of, swap, uninitialized, forget};
+use std::mem::{size_of, swap, forget};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use unreachable::{UncheckedOptionExt, unreachable};
@@ -125,7 +125,6 @@ struct DualPivotSortData<'a, T: 'a> {
     great: usize,
     pivot1: T,
     pivot2: T,
-    vk: T,
 }
 
 enum DualPivotSort<'a, T: 'a> {
@@ -193,7 +192,6 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
         let mut this = DualPivotSort::new(DualPivotSortData{
             pivot1: ptr::read(v.get_unchecked(p1)),
             pivot2: ptr::read(v.get_unchecked(p2)),
-            vk: uninitialized(),
             less: 0,
             great: n - 1,
             v: v,
@@ -215,20 +213,20 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
             // Partitioning
             let mut k = this.less;
             while k <= this.great {
-                copy(this.v.get_unchecked(k), &mut this.vk);
-                if compare(&this.vk, &this.pivot1) == Less {
-                    copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
-                    copy(&this.vk, this.v.get_unchecked_mut(this.less));
+                if compare(this.v.get_unchecked(k), &this.pivot1) == Less {
+                    unsafe_swap(this.v, this.less, k);
                     this.less += 1;
-                } else if compare(&this.vk, &this.pivot2) == Greater {
+                } else if compare(this.v.get_unchecked(k), &this.pivot2) == Greater {
                     if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
+                        let vk = ptr::read(this.v.get_unchecked(k));
                         copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
                         copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
+                        copy(&vk, this.v.get_unchecked_mut(this.great));
+                        forget(vk);
                         this.less += 1;
                     } else {
-                        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(k));
+                        unsafe_swap(this.v, this.great, k);
                     }
-                    copy(&this.vk, this.v.get_unchecked_mut(this.great));
                     this.great -= 1;
                     while k < this.great && compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
                 }
