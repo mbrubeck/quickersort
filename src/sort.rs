@@ -185,13 +185,13 @@ impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
 fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, usize, usize, usize, usize),
                                                  compare: &C, rec: u32, heapsort_depth: u32) {
     let n = v.len();
-    let (_, p1, _, p2, _) = pivots;
+    let (e1, e2, _, e4, e5) = pivots;
     let (less, great);
 
     unsafe {
         let mut this = DualPivotSort::new(DualPivotSortData{
-            pivot1: ptr::read(v.get_unchecked(p1)),
-            pivot2: ptr::read(v.get_unchecked(p2)),
+            pivot1: ptr::read(v.get_unchecked(e2)),
+            pivot2: ptr::read(v.get_unchecked(e4)),
             less: 0,
             great: n - 1,
             v: v,
@@ -201,11 +201,15 @@ fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, us
 
             // The first and last elements to be sorted are moved to the locations formerly occupied by the
             // pivots. When partitioning is complete, they are swapped back, and not sorted again.
-            copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(p1));
-            copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(p2));
+            copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(e2));
+            copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(e4));
 
             // Skip elements which are less or greater than the pivot values.
             this.less += 1;
+            unsafe_swap(this.v, e1, this.less);
+            this.less += 1;
+            this.great -= 1;
+            unsafe_swap(this.v, e5, this.great);
             this.great -= 1;
             while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
             while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
