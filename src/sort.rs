@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
-use std::mem::{size_of, swap, forget};
+use std::mem::{size_of, swap, forget, replace};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
+use std::usize;
 use unreachable::{UncheckedOptionExt, unreachable};
 
 #[inline(always)]
@@ -38,58 +39,139 @@ fn introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, h
 }
 
 fn do_introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, heapsort_depth: u32) {
-    macro_rules! maybe_swap(
-        ($v: expr, $a: expr, $b: expr, $compare: expr) => {
-            if compare_idxs($v, *$a, *$b, $compare) == Greater {
-                swap($a, $b);
+    let n = v.len();
+    let (start, end) = get_pivots(v, compare, 0, 0, n, n);
+    quicksort(v, 0, start - 1, start, end, n, compare, rec, heapsort_depth);
+}
+
+fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less: usize, start: usize, start_greater: usize, end_greater: usize) -> (usize, usize) {
+    // Ideal pivot selection based on: http://users.aims.ac.za/~mackay/sorting/sorting.html
+    let n_tot = end_greater - start_less;
+    let n_unsorted = start_greater - start;
+    let m_needed = min(sqrt(n_tot / log2(n_tot) as usize), 3);
+    let m_curr = n_tot - n_unsorted;
+    if m_curr >= m_needed {
+        return (start, start_greater);
+    }
+    let m_missing = m_needed - m_curr;
+    let mut ret_start = start;
+    let mut ret_end = start_greater;
+    for i in 0 .. m_missing {
+        let pos = start + (((ret_end - ret_start) / m_missing) * i);
+        if ret_start != 0 && compare(&v[pos], &v[ret_start - 1]) == Greater {
+            v.swap(pos, ret_end - 1);
+            let mut n = ret_end;
+            ret_end -= 1;
+            while n < end_greater && compare(&v[n - 1], &v[n]) == Greater {
+                v.swap(n - 1, n);
+                n += 1;
+            }
+        } else {
+            v.swap(pos, ret_start);
+            let mut n = ret_start;
+            ret_start += 1;
+            while n > start_less && compare(&v[n], &v[n - 1]) == Less {
+                v.swap(n, n - 1);
+                n -= 1;
             }
         }
-    );
+    }
+    let even_mask = usize::MAX - 1;
+    while (end_greater - ret_end) & even_mask < (ret_start - start_less) & even_mask {
+        v.swap(ret_start - 1, ret_end - 1);
+        ret_start -= 1;
+        ret_end -= 1;
+    }
+    while end_greater - ret_end > ret_start - start_less {
+        v.swap(ret_start, ret_end);
+        ret_start += 1;
+        ret_end += 1;
+    }
+    (ret_start, ret_end)
+}
 
+// Quicksort the list, assuming the pivot is right before the numbers to be
+// sorted. That is, the list has this structure:
+// [LLL][P][___][GGG]
+// ^     ^ ^    ^   ^
+// | pivot start|   |
+// start_less   end end_greater
+fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, pivot: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
     if rec > heapsort_depth {
         heapsort(v, compare);
         return;
     }
-
-    let n = v.len();
-
-    // Pivot selection algorithm based on Java's DualPivotQuicksort.
-
-    // Fast approximation of n / 7
-    let seventh = (n / 8) + (n / 64) + 1;
-
-    // Pick five element evenly spaced around the middle (inclusive) of the slice.
-    let mut e3 = n / 2;
-    let mut e2 = e3 - seventh;
-    let mut e1 = e3 - 2*seventh;
-    let mut e4 = e3 + seventh;
-    let mut e5 = e3 + 2*seventh;
-
-    // Sort them with a sorting network.
-    unsafe {
-        maybe_swap!(v, &mut e1, &mut e2, compare);
-        maybe_swap!(v, &mut e4, &mut e5, compare);
-        maybe_swap!(v, &mut e3, &mut e5, compare);
-        maybe_swap!(v, &mut e3, &mut e4, compare);
-        maybe_swap!(v, &mut e2, &mut e5, compare);
-        maybe_swap!(v, &mut e1, &mut e4, compare);
-        maybe_swap!(v, &mut e1, &mut e3, compare);
-        maybe_swap!(v, &mut e2, &mut e4, compare);
-        maybe_swap!(v, &mut e2, &mut e3, compare);
+    let (mut less, equal, greater) = partition(v, pivot, start, end, compare, rec, heapsort_depth);
+    v.swap(pivot, less - 1);
+    less -= 1;
+    if !maybe_insertion_sort(&mut v[start_less..less], compare) {
+        let mut middle_lo = ((pivot - start_less) / 2) + start_less;
+        if middle_lo > start_less {
+            for i in middle_lo + 1 .. pivot {
+                v.swap(i, i - (middle_lo + 1) + less - (pivot - (middle_lo + 1)));
+            }
+        } else {
+            middle_lo = pivot.wrapping_sub(1);
+        }
+        let (new_start, new_end) = get_pivots(v, compare, start_less, middle_lo.wrapping_add(1), less - (pivot - (middle_lo.wrapping_add(1))), less);
+        quicksort(v, start_less, new_start - 1, new_start, new_end, less, compare, rec + 1, heapsort_depth);
     }
-
-    if unsafe { compare_idxs(v, e1, e2, compare) != Equal &&
-                compare_idxs(v, e2, e3, compare) != Equal &&
-                compare_idxs(v, e3, e4, compare) != Equal &&
-                compare_idxs(v, e4, e5, compare) != Equal } {
-        // No consecutive pivot candidates are the same, meaning there is some variaton.
-        dual_pivot_sort(v, (e1, e2, e3, e4, e5), compare, rec, heapsort_depth);
-    } else {
-        // Two consecutive pivots candidates where the same.
-        // There are probably many similar elements.
-        single_pivot_sort(v, e3, compare, rec, heapsort_depth);
+    if !maybe_insertion_sort(&mut v[equal..end_greater], compare) {
+        let mut middle_hi = end + ((pivot - start_less) / 2);
+        if middle_hi < end_greater {
+            for i in end .. (middle_hi + 1) {
+                v.swap(i, i - end + equal);
+            }
+        } else {
+            middle_hi = end - 1;
+        }
+        let (new_start, new_end) = get_pivots(v, compare, equal, middle_hi + equal + 1 - end, middle_hi + 1, end_greater);
+        quicksort(v, equal, new_start - 1, new_start, new_end, end_greater, compare, rec + 1, heapsort_depth);
     }
 }
+
+// Partition a list based on a out-of-band pivot. Return values correspond to
+// this fat partition scheme: (less, equal, greater)
+//
+// [LLL][EEE][GGG]
+//      ^   ^^
+//      |   ||
+//      less|equal
+//          |
+//          greater
+//
+//   less: index of the first number that is not < than the pivot
+//   equal: index of the first number that is not <= the pivot
+//   greater: index of the last number that is not > the pivot
+fn partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, start: usize, end: usize, compare: &C, rec: u32, heapsort_depth: u32) -> (usize, usize, usize) {
+    let mut equal = start;
+    let mut less = start;
+    let mut greater = end - 1;
+    while equal <= greater && compare(&v[greater], &v[pivot]) == Greater {
+        greater -= 1;
+    }
+    while equal <= greater {
+        match compare(&v[equal], &v[pivot]) {
+            Equal => {
+                equal += 1;
+            }
+            Less => {
+                v.swap(equal, less);
+                less += 1;
+                equal += 1;
+            },
+            Greater => {
+                v.swap(equal, greater);
+                greater -= 1;
+                while equal <= greater && compare(&v[greater], &v[pivot]) == Greater {
+                    greater -= 1;
+                }
+            }
+        }
+    }
+    (less, equal, greater)
+}
+
 
 fn maybe_insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) -> bool {
     let n = v.len();
@@ -115,199 +197,6 @@ pub fn insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
             unsafe { unsafe_swap(v, j, j-1); }
             j -= 1;
         }
-        i += 1;
-    }
-}
-
-struct DualPivotSortData<'a, T: 'a> {
-    v: &'a mut [T],
-    less: usize,
-    great: usize,
-    pivot1: T,
-    pivot2: T,
-}
-
-enum DualPivotSort<'a, T: 'a> {
-    None,
-    Some(DualPivotSortData<'a, T>),
-}
-
-impl<'a, T: 'a> DualPivotSort<'a, T> {
-    #[inline(always)]
-    fn new(this: DualPivotSortData<'a, T>) -> Self {
-        DualPivotSort::Some(this)
-    }
-
-    #[inline(always)]
-    fn done(&mut self) {
-        let n = self.v.len();
-        unsafe {
-            let mut this: &mut DualPivotSortData<'a, T> = &mut *self;
-            copy(this.v.get_unchecked(this.less - 1), this.v.get_unchecked_mut(0));
-            copy(&this.pivot1, this.v.get_unchecked_mut(this.less - 1));
-            copy(this.v.get_unchecked(this.great + 1), this.v.get_unchecked_mut(n - 1));
-            copy(&this.pivot2, this.v.get_unchecked_mut(this.great + 1));
-        }
-    }
-}
-
-impl<'a, T: 'a> Deref for DualPivotSort<'a, T> {
-    type Target = DualPivotSortData<'a, T>;
-    #[inline(always)]
-    fn deref(&self) -> &DualPivotSortData<'a, T> {
-        match self {
-            &DualPivotSort::None => unsafe { unreachable() },
-            &DualPivotSort::Some(ref x) => x,
-        }
-    }
-}
-
-impl<'a, T: 'a> DerefMut for DualPivotSort<'a, T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut DualPivotSortData<'a, T> {
-        match self {
-            &mut DualPivotSort::None => unsafe { unreachable() },
-            &mut DualPivotSort::Some(ref mut x) => x,
-        }
-    }
-}
-
-impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.done();
-        unsafe {
-            ptr::write(self, DualPivotSort::None);
-        }
-    }
-}
-
-fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, usize, usize, usize, usize),
-                                                 compare: &C, rec: u32, heapsort_depth: u32) {
-    let n = v.len();
-    let (e1, e2, _, e4, e5) = pivots;
-    let (less, great);
-
-    unsafe {
-        let mut this = DualPivotSort::new(DualPivotSortData{
-            pivot1: ptr::read(v.get_unchecked(e2)),
-            pivot2: ptr::read(v.get_unchecked(e4)),
-            less: 0,
-            great: n - 1,
-            v: v,
-        });
-        {
-            let mut this: &mut DualPivotSortData<T> = &mut *this;
-
-            // The first and last elements to be sorted are moved to the locations formerly occupied by the
-            // pivots. When partitioning is complete, they are swapped back, and not sorted again.
-            copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(e2));
-            copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(e4));
-
-            // Skip elements which are less or greater than the pivot values.
-            this.less += 1;
-            unsafe_swap(this.v, e1, this.less);
-            this.less += 1;
-            this.great -= 1;
-            unsafe_swap(this.v, e5, this.great);
-            this.great -= 1;
-            while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
-            while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
-
-            // Partitioning
-            let mut k = this.less;
-            while k <= this.great {
-                if compare(this.v.get_unchecked(k), &this.pivot1) == Less {
-                    unsafe_swap(this.v, this.less, k);
-                    this.less += 1;
-                } else if compare(this.v.get_unchecked(k), &this.pivot2) == Greater {
-                    if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
-                        let vk = ptr::read(this.v.get_unchecked(k));
-                        copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
-                        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
-                        copy(&vk, this.v.get_unchecked_mut(this.great));
-                        forget(vk);
-                        this.less += 1;
-                    } else {
-                        unsafe_swap(this.v, this.great, k);
-                    }
-                    this.great -= 1;
-                    while k < this.great && compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
-                }
-                k += 1;
-            }
-            less = this.less;
-            great = this.great;
-        }
-        this.done();
-        forget(this);
-    }
-
-    // Sort the left, right, and center parts.
-    introsort(&mut v[..less - 1], compare, rec + 1, heapsort_depth);
-    introsort(&mut v[less..great + 1], compare, rec + 1, heapsort_depth);
-    introsort(&mut v[great + 2..], compare, rec + 1, heapsort_depth);
-}
-
-fn single_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, compare: &C, rec: u32, heapsort_depth: u32) {
-    let (l, r) = fat_partition(v, pivot, compare);
-    let n = v.len();
-    if l > 1 {
-        introsort(&mut v[..l], compare, rec + 1, heapsort_depth);
-    }
-    if r > 1 {
-        introsort(&mut v[n - r..], compare, rec + 1, heapsort_depth);
-    }
-}
-
-/// Partitions elements, using the element at `pivot` as pivot.
-/// After partitioning, the array looks as following:
-/// <<<<<==>>>
-/// Return (number of < elements, number of > elements)
-fn fat_partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, compare: &C) -> (usize, usize)  {
-    let mut a = 0;
-    let mut b = a;
-    let mut c = v.len() - 1;
-    let mut d = c;
-    v.swap(0, pivot);
-    loop {
-        while b <= c {
-            let r = compare_idxs_safe(v, b, 0, compare);
-            if r == Greater { break; }
-            if r == Equal {
-                unsafe { unsafe_swap(v, a, b); }
-                a += 1;
-            }
-            b += 1;
-        }
-        while c >= b {
-            let r = compare_idxs_safe(v, c, 0, compare);
-            if r == Less { break; }
-            if r == Equal {
-                unsafe { unsafe_swap(v, c, d); }
-                d -= 1;
-            }
-            c -= 1;
-        }
-        if b > c { break; }
-        unsafe { unsafe_swap(v, b, c); }
-        b += 1;
-        c -= 1;
-    }
-
-    let n = v.len();
-    let l = min(a, b - a);
-    unsafe { swap_many(v, 0, b - l, l); }
-    let r = min(d - c, n - 1 - d);
-    unsafe { swap_many(v, b, n - r, r); }
-
-    return (b - a, d - c);
-}
-
-unsafe fn swap_many<T>(v: &mut [T], a: usize, b: usize, n: usize) {
-    let mut i = 0;
-    while i < n {
-        unsafe_swap(v, a + i, b + i);
         i += 1;
     }
 }
@@ -436,6 +325,13 @@ fn log2(x: usize) -> u32 {
     if x <= 1 { return 0; }
     let n = x.leading_zeros();
     size_of::<usize>() as u32 * 8 - n
+}
+
+fn sqrt(x: usize) -> usize {
+    let mut approx = x;
+    approx = (approx + (x / approx)) / 2;
+    approx = (approx + (x / approx)) / 2;
+    (approx + (x / approx)) / 2
 }
 
 #[inline(always)]
