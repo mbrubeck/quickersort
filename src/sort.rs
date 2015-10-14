@@ -41,38 +41,37 @@ fn introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, h
 fn do_introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, heapsort_depth: u32) {
     let n = v.len();
     let (start, end) = get_pivots(v, compare, 0, 0, n, n);
-    quicksort(v, 0, start - 1, start, end, n, compare, rec, heapsort_depth);
+    quicksort(v, 0, start, end, n, compare, rec, heapsort_depth);
 }
 
 fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less: usize, start: usize, start_greater: usize, end_greater: usize) -> (usize, usize) {
     // Ideal pivot selection based on: http://users.aims.ac.za/~mackay/sorting/sorting.html
     let n_tot = end_greater - start_less;
     let n_unsorted = start_greater - start;
-    let m_needed = min(sqrt(n_tot / log2(n_tot) as usize), 3);
+    let m_needed = max(sqrt(n_tot / log2(n_tot) as usize), 7);
     let m_curr = n_tot - n_unsorted;
-    if m_curr >= m_needed {
-        return (start, start_greater);
-    }
-    let m_missing = m_needed - m_curr;
     let mut ret_start = start;
     let mut ret_end = start_greater;
-    for i in 0 .. m_missing {
-        let pos = start + (((ret_end - ret_start) / m_missing) * i);
-        if ret_start != 0 && compare(&v[pos], &v[ret_start - 1]) == Greater {
-            v.swap(pos, ret_end - 1);
-            let mut n = ret_end;
-            ret_end -= 1;
-            while n < end_greater && compare(&v[n - 1], &v[n]) == Greater {
-                v.swap(n - 1, n);
-                n += 1;
-            }
-        } else {
-            v.swap(pos, ret_start);
-            let mut n = ret_start;
-            ret_start += 1;
-            while n > start_less && compare(&v[n], &v[n - 1]) == Less {
-                v.swap(n, n - 1);
-                n -= 1;
+    if m_curr < m_needed {
+        let m_missing = m_needed - m_curr;
+        for i in 0 .. m_missing {
+            let pos = start + (((ret_end - ret_start) / m_missing) * i);
+            if ret_start != 0 && compare(&v[pos], &v[ret_start - 1]) == Greater {
+                v.swap(pos, ret_end - 1);
+                let mut n = ret_end;
+                ret_end -= 1;
+                while n < end_greater && compare(&v[n - 1], &v[n]) == Greater {
+                    v.swap(n - 1, n);
+                    n += 1;
+                }
+            } else {
+                v.swap(pos, ret_start);
+                let mut n = ret_start;
+                ret_start += 1;
+                while n > start_less && compare(&v[n], &v[n - 1]) == Less {
+                    v.swap(n, n - 1);
+                    n -= 1;
+                }
             }
         }
     }
@@ -92,41 +91,112 @@ fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less
 
 // Quicksort the list, assuming the pivot is right before the numbers to be
 // sorted. That is, the list has this structure:
-// [LLL][P][___][GGG]
-// ^     ^ ^    ^   ^
-// | pivot start|   |
-// start_less   end end_greater
-fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, pivot: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
+// [NNNN][___][NNN]
+// ^     ^    ^   ^
+// |     start|   |
+// start_less end end_greater
+// Where the N's are already sorted.
+fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
     if rec > heapsort_depth {
         heapsort(v, compare);
-        return;
+    } else if compare(&v[start-1], &v[end]) == Equal {
+        fat_quicksort(v, start_less, start, end, end_greater, compare, rec, heapsort_depth);
+    } else {
+        double_quicksort(v, start_less, start, end, end_greater, compare, rec, heapsort_depth);
     }
-    let (mut less, equal, greater) = partition(v, pivot, start, end, compare, rec, heapsort_depth);
+}
+
+// Quicksort the list, using two pivots:
+// [LLLP][___][QGGG]
+// ^     ^    ^   ^
+// |     start|   |
+// start_less end end_greater
+fn double_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
+    let pivot1 = ((start - start_less) / 2) + start_less;
+    let pivot2 = ((end_greater - end) / 2) + end;
+    let mut less = start;
+    let mut greater = end - 1;
+    while less <= greater && compare(&v[less], &v[pivot1]) == Less {
+        less += 1;
+    }
+    while less <= greater && compare(&v[greater], &v[pivot2]) == Greater {
+        greater -= 1;
+    }
+    let mut k = less;
+    while k <= greater {
+        if compare(&v[k], &v[pivot1]) == Less {
+            v.swap(k, less);
+            less += 1;
+        } else if compare(&v[k], &v[pivot2]) == Greater {
+            if compare(&v[greater], &v[pivot1]) == Less {
+                unsafe {
+                    let vk = ptr::read(v.get_unchecked(k));
+                    copy(v.get_unchecked(less), v.get_unchecked_mut(k));
+                    copy(v.get_unchecked(greater), v.get_unchecked_mut(less));
+                    copy(&vk, v.get_unchecked_mut(greater));
+                    forget(vk);
+                }
+                less += 1;
+            } else {
+                v.swap(k, greater);
+            }
+            greater -= 1;
+            while k < greater && compare(&v[greater], &v[pivot2]) == Greater {
+                greater -= 1;
+            }
+        }
+        k += 1;
+    }
+    for i in pivot1 .. start {
+        let j = start - i + pivot1 - 1;
+        v.swap(j, less + j - start);
+    }
+    less -= start - pivot1;
+    for i in end .. pivot2 {
+        v.swap(i, i + greater - end + 1);
+    }
+    greater += pivot2 - end;
+    if !maybe_insertion_sort(&mut v[start_less..less], compare) {
+        let (new_start, new_end) = get_pivots(v, compare, start_less, pivot1, less, less);
+        quicksort(v, start_less, new_start, new_end, less, compare, rec + 1, heapsort_depth);
+    }
+    if !maybe_insertion_sort(&mut v[less..greater + 1], compare) {
+        let (new_start, new_end) = get_pivots(v, compare, less, less + (start - pivot1), greater + 1 - (pivot2 - end), greater + 1);
+        quicksort(v, less, new_start, new_end, greater + 1, compare, rec + 1, heapsort_depth);
+    }
+    if !maybe_insertion_sort(&mut v[greater + 1..end_greater], compare) {
+        let (new_start, new_end) = get_pivots(v, compare, greater + 1, greater + 1, pivot2, end_greater);
+        quicksort(v, greater + 1, new_start, new_end, end_greater, compare, rec + 1, heapsort_depth);
+    }
+}
+
+// Quicksort the list, assuming the pivot is right before the numbers to be
+// sorted. That is, the list has this structure:
+// [LLLP][___][PGGG]
+// ^     ^    ^   ^
+// |     start|   |
+// start_less end end_greater
+// Where both P's are equal.
+fn fat_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
+    let pivot = start - 1;
+    let (mut less, equal, greater) = fat_partition(v, pivot, start, end, compare, rec, heapsort_depth);
     v.swap(pivot, less - 1);
     less -= 1;
     if !maybe_insertion_sort(&mut v[start_less..less], compare) {
         let mut middle_lo = ((pivot - start_less) / 2) + start_less;
-        if middle_lo > start_less {
-            for i in middle_lo + 1 .. pivot {
-                v.swap(i, i - (middle_lo + 1) + less - (pivot - (middle_lo + 1)));
-            }
-        } else {
-            middle_lo = pivot.wrapping_sub(1);
+        for i in middle_lo + 1 .. pivot {
+            v.swap(i, i - (middle_lo + 1) + less - (pivot - (middle_lo + 1)));
         }
-        let (new_start, new_end) = get_pivots(v, compare, start_less, middle_lo.wrapping_add(1), less - (pivot - (middle_lo.wrapping_add(1))), less);
-        quicksort(v, start_less, new_start - 1, new_start, new_end, less, compare, rec + 1, heapsort_depth);
+        let (new_start, new_end) = get_pivots(v, compare, start_less, middle_lo + 1, less - (pivot - (middle_lo + 1)), less);
+        quicksort(v, start_less, new_start, new_end, less, compare, rec + 1, heapsort_depth);
     }
     if !maybe_insertion_sort(&mut v[equal..end_greater], compare) {
         let mut middle_hi = end + ((pivot - start_less) / 2);
-        if middle_hi < end_greater {
-            for i in end .. (middle_hi + 1) {
-                v.swap(i, i - end + equal);
-            }
-        } else {
-            middle_hi = end - 1;
+        for i in end .. (middle_hi + 1) {
+            v.swap(i, i - end + equal);
         }
         let (new_start, new_end) = get_pivots(v, compare, equal, middle_hi + equal + 1 - end, middle_hi + 1, end_greater);
-        quicksort(v, equal, new_start - 1, new_start, new_end, end_greater, compare, rec + 1, heapsort_depth);
+        quicksort(v, equal, new_start, new_end, end_greater, compare, rec + 1, heapsort_depth);
     }
 }
 
@@ -143,7 +213,7 @@ fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, pivot
 //   less: index of the first number that is not < than the pivot
 //   equal: index of the first number that is not <= the pivot
 //   greater: index of the last number that is not > the pivot
-fn partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, start: usize, end: usize, compare: &C, rec: u32, heapsort_depth: u32) -> (usize, usize, usize) {
+fn fat_partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, start: usize, end: usize, compare: &C, rec: u32, heapsort_depth: u32) -> (usize, usize, usize) {
     let mut equal = start;
     let mut less = start;
     let mut greater = end - 1;
