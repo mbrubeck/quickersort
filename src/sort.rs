@@ -40,11 +40,13 @@ fn introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, h
 
 fn do_introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, heapsort_depth: u32) {
     let n = v.len();
-    let (start, end) = get_pivots(v, compare, 0, 0, n, n);
-    quicksort(v, 0, start, end, n, compare, rec, heapsort_depth);
+    unsafe {
+        let (start, end) = get_pivots(v, compare, 0, 0, n, n);
+        quicksort(v, 0, start, end, n, compare, rec, heapsort_depth);
+    }
 }
 
-fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less: usize, start: usize, start_greater: usize, end_greater: usize) -> (usize, usize) {
+unsafe fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less: usize, start: usize, start_greater: usize, end_greater: usize) -> (usize, usize) {
     // Ideal pivot selection based on: http://users.aims.ac.za/~mackay/sorting/sorting.html
     let n_tot = end_greater - start_less;
     let n_unsorted = start_greater - start;
@@ -56,20 +58,20 @@ fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less
         let m_missing = m_needed - m_curr;
         for i in 0 .. m_missing {
             let pos = start + (((ret_end - ret_start) / m_missing) * i);
-            if ret_start != 0 && compare(&v[pos], &v[ret_start - 1]) == Greater {
-                v.swap(pos, ret_end - 1);
+            if ret_start != 0 && compare_idxs(v, pos, ret_start - 1, compare) == Greater {
+                unsafe_swap(v, pos, ret_end - 1);
                 let mut n = ret_end;
                 ret_end -= 1;
-                while n < end_greater && compare(&v[n - 1], &v[n]) == Greater {
-                    v.swap(n - 1, n);
+                while n < end_greater && compare_idxs(v, n - 1, n, compare) == Greater {
+                    unsafe_swap(v, n - 1, n);
                     n += 1;
                 }
             } else {
-                v.swap(pos, ret_start);
+                unsafe_swap(v, pos, ret_start);
                 let mut n = ret_start;
                 ret_start += 1;
-                while n > start_less && compare(&v[n], &v[n - 1]) == Less {
-                    v.swap(n, n - 1);
+                while n > start_less && compare_idxs(v, n, n - 1, compare) == Less {
+                    unsafe_swap(v, n, n - 1);
                     n -= 1;
                 }
             }
@@ -77,12 +79,12 @@ fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less
     }
     let even_mask = usize::MAX - 1;
     while (end_greater - ret_end) & even_mask < (ret_start - start_less) & even_mask {
-        v.swap(ret_start - 1, ret_end - 1);
+        unsafe_swap(v, ret_start - 1, ret_end - 1);
         ret_start -= 1;
         ret_end -= 1;
     }
     while end_greater - ret_end > ret_start - start_less {
-        v.swap(ret_start, ret_end);
+        unsafe_swap(v, ret_start, ret_end);
         ret_start += 1;
         ret_end += 1;
     }
@@ -96,10 +98,10 @@ fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, start_less
 // |     start|   |
 // start_less end end_greater
 // Where the N's are already sorted.
-fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
+unsafe fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
     if rec > heapsort_depth {
         heapsort(v, compare);
-    } else if compare(&v[start-1], &v[end]) == Equal {
+    } else if compare_idxs(v, start-1, end, compare) == Equal {
         fat_quicksort(v, start_less, start, end, end_greater, compare, rec, heapsort_depth);
     } else {
         double_quicksort(v, start_less, start, end, end_greater, compare, rec, heapsort_depth);
@@ -111,37 +113,35 @@ fn quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start
 // ^     ^    ^   ^
 // |     start|   |
 // start_less end end_greater
-fn double_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
+unsafe fn double_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
     let pivot1 = ((start - start_less) / 2) + start_less;
     let pivot2 = ((end_greater - end) / 2) + end;
     let mut less = start;
     let mut greater = end - 1;
-    while less <= greater && compare(&v[less], &v[pivot1]) == Less {
+    while less <= greater && compare_idxs(v, less, pivot1, compare) == Less {
         less += 1;
     }
-    while less <= greater && compare(&v[greater], &v[pivot2]) == Greater {
+    while less <= greater && compare_idxs(v, greater, pivot2, compare) == Greater {
         greater -= 1;
     }
     let mut k = less;
     while k <= greater {
-        if compare(&v[k], &v[pivot1]) == Less {
-            v.swap(k, less);
+        if compare_idxs(v, k, pivot1, compare) == Less {
+            unsafe_swap(v, k, less);
             less += 1;
-        } else if compare(&v[k], &v[pivot2]) == Greater {
-            if compare(&v[greater], &v[pivot1]) == Less {
-                unsafe {
-                    let vk = ptr::read(v.get_unchecked(k));
-                    copy(v.get_unchecked(less), v.get_unchecked_mut(k));
-                    copy(v.get_unchecked(greater), v.get_unchecked_mut(less));
-                    copy(&vk, v.get_unchecked_mut(greater));
-                    forget(vk);
-                }
+        } else if compare_idxs(v, k, pivot2, compare) == Greater {
+            if compare_idxs(v, greater, pivot1, compare) == Less {
+                let vk = ptr::read(v.get_unchecked(k));
+                copy(v.get_unchecked(less), v.get_unchecked_mut(k));
+                copy(v.get_unchecked(greater), v.get_unchecked_mut(less));
+                copy(&vk, v.get_unchecked_mut(greater));
+                forget(vk);
                 less += 1;
             } else {
-                v.swap(k, greater);
+                unsafe_swap(v, k, greater);
             }
             greater -= 1;
-            while k < greater && compare(&v[greater], &v[pivot2]) == Greater {
+            while k < greater && compare_idxs(v, greater, pivot2, compare) == Greater {
                 greater -= 1;
             }
         }
@@ -149,11 +149,11 @@ fn double_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize
     }
     for i in pivot1 .. start {
         let j = start - i + pivot1 - 1;
-        v.swap(j, less + j - start);
+        unsafe_swap(v, j, less + j - start);
     }
     less -= start - pivot1;
     for i in end .. pivot2 {
-        v.swap(i, i + greater - end + 1);
+        unsafe_swap(v, i, i + greater - end + 1);
     }
     greater += pivot2 - end;
     if !maybe_insertion_sort(&mut v[start_less..less], compare) {
@@ -177,15 +177,15 @@ fn double_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize
 // |     start|   |
 // start_less end end_greater
 // Where both P's are equal.
-fn fat_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
+unsafe fn fat_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, start: usize, end: usize, end_greater: usize, compare: &C, rec: u32, heapsort_depth: u32) {
     let pivot = start - 1;
     let (mut less, equal, greater) = fat_partition(v, pivot, start, end, compare, rec, heapsort_depth);
-    v.swap(pivot, less - 1);
+    unsafe_swap(v, pivot, less - 1);
     less -= 1;
     if !maybe_insertion_sort(&mut v[start_less..less], compare) {
         let mut middle_lo = ((pivot - start_less) / 2) + start_less;
         for i in middle_lo + 1 .. pivot {
-            v.swap(i, i - (middle_lo + 1) + less - (pivot - (middle_lo + 1)));
+            unsafe_swap(v, i, i - (middle_lo + 1) + less - (pivot - (middle_lo + 1)));
         }
         let (new_start, new_end) = get_pivots(v, compare, start_less, middle_lo + 1, less - (pivot - (middle_lo + 1)), less);
         quicksort(v, start_less, new_start, new_end, less, compare, rec + 1, heapsort_depth);
@@ -193,7 +193,7 @@ fn fat_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, s
     if !maybe_insertion_sort(&mut v[equal..end_greater], compare) {
         let mut middle_hi = end + ((pivot - start_less) / 2);
         for i in end .. (middle_hi + 1) {
-            v.swap(i, i - end + equal);
+            unsafe_swap(v, i, i - end + equal);
         }
         let (new_start, new_end) = get_pivots(v, compare, equal, middle_hi + equal + 1 - end, middle_hi + 1, end_greater);
         quicksort(v, equal, new_start, new_end, end_greater, compare, rec + 1, heapsort_depth);
@@ -213,27 +213,27 @@ fn fat_quicksort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], start_less: usize, s
 //   less: index of the first number that is not < than the pivot
 //   equal: index of the first number that is not <= the pivot
 //   greater: index of the last number that is not > the pivot
-fn fat_partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, start: usize, end: usize, compare: &C, rec: u32, heapsort_depth: u32) -> (usize, usize, usize) {
+unsafe fn fat_partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, start: usize, end: usize, compare: &C, rec: u32, heapsort_depth: u32) -> (usize, usize, usize) {
     let mut equal = start;
     let mut less = start;
     let mut greater = end - 1;
-    while equal <= greater && compare(&v[greater], &v[pivot]) == Greater {
+    while equal <= greater && compare_idxs(v, greater, pivot, compare) == Greater {
         greater -= 1;
     }
     while equal <= greater {
-        match compare(&v[equal], &v[pivot]) {
+        match compare_idxs(v, equal, pivot, compare) {
             Equal => {
                 equal += 1;
             }
             Less => {
-                v.swap(equal, less);
+                unsafe_swap(v, equal, less);
                 less += 1;
                 equal += 1;
             },
             Greater => {
-                v.swap(equal, greater);
+                unsafe_swap(v, equal, greater);
                 greater -= 1;
-                while equal <= greater && compare(&v[greater], &v[pivot]) == Greater {
+                while equal <= greater && compare_idxs(v, greater, pivot, compare) == Greater {
                     greater -= 1;
                 }
             }
