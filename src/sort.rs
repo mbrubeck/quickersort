@@ -398,10 +398,7 @@ fn log2(x: usize) -> u32 {
 }
 
 fn sqrt(x: usize) -> usize {
-    let mut approx = x;
-    approx = (approx + (x / approx)) / 2;
-    approx = (approx + (x / approx)) / 2;
-    (approx + (x / approx)) / 2
+    (x as f64).sqrt() as usize
 }
 
 #[inline(always)]
