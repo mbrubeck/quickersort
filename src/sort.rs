@@ -41,7 +41,7 @@ fn introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, h
 fn do_introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, heapsort_depth: u32) {
     let n = v.len();
     unsafe {
-        let (start, end) = get_pivots(v, compare, 0, 0, n, n);
+        let (start, end) = get_pivots(v, compare, 0, 1, n, n);
         quicksort(v, 0, start, end, n, compare, rec, heapsort_depth);
     }
 }
@@ -58,7 +58,7 @@ unsafe fn get_pivots<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, sta
         let m_missing = m_needed - m_curr;
         for i in 0 .. m_missing {
             let pos = start + (((ret_end - ret_start) / m_missing) * i);
-            if ret_start != 0 && compare_idxs(v, pos, ret_start - 1, compare) == Greater {
+            if compare_idxs(v, pos, ret_start - 1, compare) == Greater {
                 unsafe_swap(v, pos, ret_end - 1);
                 let mut n = ret_end;
                 ret_end -= 1;
