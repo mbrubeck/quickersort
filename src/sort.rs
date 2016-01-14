@@ -6,11 +6,6 @@ use std::ops::{Deref, DerefMut};
 use std::ptr;
 use unreachable::{UncheckedOptionExt, unreachable};
 
-#[inline(always)]
-unsafe fn copy<T>(a: *const T, b: *mut T) {
-    ptr::write(b, ptr::read(a))
-}
-
 /// The smallest number of elements that may be quicksorted.
 /// Must be at least 9.
 const MIN_QUICKSORT_ELEMS: usize = 10;
@@ -454,3 +449,9 @@ fn compare_idxs_safe<T, C: Fn(&T, &T) -> Ordering>(v: &[T], a: usize, b: usize, 
 unsafe fn unsafe_swap<T>(v: &mut[T], a: usize, b: usize) {
     ptr::swap(v.get_unchecked_mut(a) as *mut T, v.get_unchecked_mut(b) as *mut T);
 }
+
+#[inline(always)]
+unsafe fn copy<T>(a: *const T, b: *mut T) {
+    ptr::write(b, ptr::read(a))
+}
+
