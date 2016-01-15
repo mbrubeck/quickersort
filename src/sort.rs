@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
-use std::mem::{size_of, swap};
+use std::mem::{forget, size_of, swap};
 use std::ptr;
+use std::slice;
 use unreachable::UncheckedOptionExt;
 
 /// The smallest number of elements that may be quicksorted.
@@ -133,54 +134,66 @@ fn thin_partition<'a, T, C: Fn(&T, &T) -> Ordering>(v: &'a mut [T], p: usize, q:
         unsafe_swap(v, p, 0);
         unsafe_swap(v, q, 1);
         unsafe_swap(v, r, n - 1);
-        let (p, q, r) = (0, 1, n - 1);
+        // I ♡ noalias on &T. It ends with my pivots being stored in registers.
+        let p = &*(v.get_unchecked(0) as *const T);
+        let q = &*(v.get_unchecked(1) as *const T);
+        let r = &*(v.get_unchecked(n - 1) as *const T);
         // The debug asserts are commented out because they give spurious errors when testing with
-        // a broken comparator.
-        //debug_assert!(compare_idxs(v, p, q, compare) != Greater);
-        //debug_assert!(compare_idxs(v, q, r, compare) != Greater);
+        // a broken comparator. Uncomment them, and comment out the broken comparator tests, if
+        // stuff's broken.
+        //debug_assert!(compare(v.get_unchecked(p), q) != Greater);
+        //debug_assert!(compare(v.get_unchecked(q), r) != Greater);
         let (mut a, mut b, mut c, mut d) = (2, 2, n - 2, n - 2);
         'outer: while b <= c {
-            if compare_idxs(v, b, q, compare) == Greater {
-                while compare_idxs(v, c, q, compare) == Greater {
-                    if compare_idxs(v, c, r, compare) == Greater {
+            if compare(v.get_unchecked(b), q) == Greater {
+                while compare(v.get_unchecked(c), q) == Greater {
+                    if compare(v.get_unchecked(c), r) == Greater {
                         unsafe_swap(v, c, d);
                         d -= 1;
                     }
-                    //debug_assert!(compare_idxs(v, c, q, compare) == Greater);
+                    //debug_assert!(compare(v.get_unchecked(c), q) == Greater);
                     c -= 1;
                     if b > c {
                         break 'outer;
                     }
                 }
-                unsafe_swap(v, b, c);
-                if compare_idxs(v, c, r, compare) == Greater {
-                    unsafe_swap(v, c, d);
+                if compare(v.get_unchecked(b), r) == Greater {
+                    let x = ptr::read(v.get_unchecked(b));
+                    copy(v.get_unchecked(c), v.get_unchecked_mut(b));
+                    copy(v.get_unchecked(d), v.get_unchecked_mut(c));
+                    copy(&x, v.get_unchecked_mut(d));
+                    forget(x);
                     d -= 1;
+                } else {
+                    unsafe_swap(v, b, c);
                 }
-                //debug_assert!(compare_idxs(v, c, q, compare) == Greater);
+                //debug_assert!(compare(v.get_unchecked(c), q) == Greater);
                 c -= 1;
                 if b > c {
                     break 'outer;
                 }
             }
-            if compare_idxs(v, b, p, compare) == Less {
+            if compare(v.get_unchecked(b), p) == Less {
                 unsafe_swap(v, a, b);
                 a += 1;
             }
+            //debug_assert!(compare(v.get_unchecked(b), q) != Greater);
             b += 1;
         }
         // And swap the pivots into place.
         a -= 1;
-        unsafe_swap(v, a, q);
+        unsafe_swap(v, a, 1);
         d += 1;
-        unsafe_swap(v, d, r);
+        unsafe_swap(v, d, n - 1);
         (a, b, d)
     };
     // Slice them up.
-    let (vabc, vd) = v.split_at_mut(d + 1);
-    let (vab, vc) = vabc.split_at_mut(b);
-    let (va, vb) = vab.split_at_mut(a);
-    (va, vb, vc, vd)
+    unsafe {
+        let (vabc, vd) = unsafe_split_at_mut(v, d + 1);
+        let (vab, vc) = unsafe_split_at_mut(vabc, b);
+        let (va, vb) = unsafe_split_at_mut(vab, a);
+        (va, vb, vc, vd)
+    }
 }
 
 /// Partitions elements, using the element at `pivot` as pivot.
@@ -223,9 +236,11 @@ fn fat_partition<'a, T, C: Fn(&T, &T) -> Ordering>(v: &'a mut [T], pivot: usize,
     let r = min(d - c, n - 1 - d);
     unsafe { swap_many(v, b, n - r, r); }
 
-    let vb = v.split_at_mut(n - (d - c));
-    let va = vb.0.split_at_mut(b - a);
-    (va.0, vb.1)
+    unsafe {
+        let vb = unsafe_split_at_mut(v, n - (d - c));
+        let va = unsafe_split_at_mut(vb.0, b - a);
+        (va.0, vb.1)
+    }
 }
 
 /// Insertion sort, if the slice is very small.
@@ -415,5 +430,13 @@ unsafe fn unsafe_swap<T>(v: &mut[T], a: usize, b: usize) {
 #[inline(always)]
 unsafe fn copy<T>(a: *const T, b: *mut T) {
     ptr::write(b, ptr::read(a))
+}
+
+#[inline(always)]
+unsafe fn unsafe_split_at_mut<T>(v: &mut [T], pos: usize) -> (&mut [T], &mut [T]) {
+    (
+        slice::from_raw_parts_mut(v.get_unchecked_mut(0) as *mut T, pos),
+        slice::from_raw_parts_mut(v.get_unchecked_mut(pos) as *mut T, v.len().wrapping_sub(pos)),
+    )
 }
 
