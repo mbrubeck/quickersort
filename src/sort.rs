@@ -1,14 +1,13 @@
 use std::cmp::Ordering;
 use std::cmp::Ordering::*;
 use std::cmp::{min, max};
-use std::mem::{size_of, swap, forget};
-use std::ops::{Deref, DerefMut};
+use std::mem::{size_of, swap};
 use std::ptr;
-use unreachable::{UncheckedOptionExt, unreachable};
+use unreachable::UncheckedOptionExt;
 
 /// The smallest number of elements that may be quicksorted.
-/// Must be at least 9.
-const MIN_QUICKSORT_ELEMS: usize = 10;
+/// Must be at least 14.
+const MIN_QUICKSORT_ELEMS: usize = 14;
 
 /// The maximum number of elements to be insertion sorted.
 const MAX_INSERTION_SORT_ELEMS: usize = 42;
@@ -17,249 +16,177 @@ const MAX_INSERTION_SORT_ELEMS: usize = 42;
 /// Higher values give more insertion sorted elements.
 const INSERTION_SORT_FACTOR: usize = 450;
 
+/// Sort using a custom ordering.
 pub fn sort_by<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
-    if maybe_insertion_sort(v, compare) { return; }
     let heapsort_depth = (3 * log2(v.len())) / 2;
-    do_introsort(v, compare, 0, heapsort_depth);
+    introsort(v, compare, 0, heapsort_depth);
 }
 
+/// Sort, if the elements have an intrinsic ordering.
 pub fn sort<T: Ord>(v: &mut [T]) {
     sort_by(v, &|a, b| a.cmp(b));
 }
 
-fn introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, heapsort_depth: u32) {
-    if maybe_insertion_sort(v, compare) { return; }
-    do_introsort(v, compare, rec, heapsort_depth);
-}
-
-fn do_introsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C, rec: u32, heapsort_depth: u32) {
-    macro_rules! maybe_swap(
-        ($v: expr, $a: expr, $b: expr, $compare: expr) => {
-            if compare_idxs($v, *$a, *$b, $compare) == Greater {
-                swap($a, $b);
-            }
-        }
-    );
-
-    if rec > heapsort_depth {
-        heapsort(v, compare);
-        return;
-    }
-
-    let n = v.len();
-
-    // Pivot selection algorithm based on Java's DualPivotQuicksort.
-
-    // Fast approximation of n / 7
-    let seventh = (n / 8) + (n / 64) + 1;
-
-    // Pick five element evenly spaced around the middle (inclusive) of the slice.
-    let mut e3 = n / 2;
-    let mut e2 = e3 - seventh;
-    let mut e1 = e3 - 2*seventh;
-    let mut e4 = e3 + seventh;
-    let mut e5 = e3 + 2*seventh;
-
-    // Sort them with a sorting network.
-    unsafe {
-        maybe_swap!(v, &mut e1, &mut e2, compare);
-        maybe_swap!(v, &mut e4, &mut e5, compare);
-        maybe_swap!(v, &mut e3, &mut e5, compare);
-        maybe_swap!(v, &mut e3, &mut e4, compare);
-        maybe_swap!(v, &mut e2, &mut e5, compare);
-        maybe_swap!(v, &mut e1, &mut e4, compare);
-        maybe_swap!(v, &mut e1, &mut e3, compare);
-        maybe_swap!(v, &mut e2, &mut e4, compare);
-        maybe_swap!(v, &mut e2, &mut e3, compare);
-    }
-
-    if unsafe { compare_idxs(v, e1, e2, compare) != Equal &&
-                compare_idxs(v, e2, e3, compare) != Equal &&
-                compare_idxs(v, e3, e4, compare) != Equal &&
-                compare_idxs(v, e4, e5, compare) != Equal } {
-        // No consecutive pivot candidates are the same, meaning there is some variaton.
-        dual_pivot_sort(v, (e1, e2, e3, e4, e5), compare, rec, heapsort_depth);
-    } else {
-        // Two consecutive pivots candidates where the same.
-        // There are probably many similar elements.
-        single_pivot_sort(v, e3, compare, rec, heapsort_depth);
-    }
-}
-
-fn maybe_insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) -> bool {
-    let n = v.len();
-    if n <= 1 {
-        return true;
-    }
-
-    let threshold = min(MAX_INSERTION_SORT_ELEMS,
-                        max(MIN_QUICKSORT_ELEMS, INSERTION_SORT_FACTOR / size_of::<T>()));
-    if n <= threshold {
-        insertion_sort(v, compare);
-        return true;
-    }
-    return false;
-}
-
-pub fn insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
-    let mut i = 1;
-    let n = v.len();
-    while i < n {
-        let mut j = i;
-        while j > 0 && unsafe { compare_idxs(v, j-1, j, compare) } == Greater {
-            unsafe { unsafe_swap(v, j, j-1); }
-            j -= 1;
-        }
-        i += 1;
-    }
-}
-
-struct DualPivotSortData<'a, T: 'a> {
-    v: &'a mut [T],
-    less: usize,
-    great: usize,
-    pivot1: T,
-    pivot2: T,
-}
-
-enum DualPivotSort<'a, T: 'a> {
-    None,
-    Some(DualPivotSortData<'a, T>),
-}
-
-impl<'a, T: 'a> DualPivotSort<'a, T> {
-    #[inline(always)]
-    fn new(this: DualPivotSortData<'a, T>) -> Self {
-        DualPivotSort::Some(this)
-    }
-
-    #[inline(always)]
-    fn done(&mut self) {
-        let n = self.v.len();
-        unsafe {
-            let mut this: &mut DualPivotSortData<'a, T> = &mut *self;
-            copy(this.v.get_unchecked(this.less - 1), this.v.get_unchecked_mut(0));
-            copy(&this.pivot1, this.v.get_unchecked_mut(this.less - 1));
-            copy(this.v.get_unchecked(this.great + 1), this.v.get_unchecked_mut(n - 1));
-            copy(&this.pivot2, this.v.get_unchecked_mut(this.great + 1));
-        }
-    }
-}
-
-impl<'a, T: 'a> Deref for DualPivotSort<'a, T> {
-    type Target = DualPivotSortData<'a, T>;
-    #[inline(always)]
-    fn deref(&self) -> &DualPivotSortData<'a, T> {
-        match self {
-            &DualPivotSort::None => unsafe { unreachable() },
-            &DualPivotSort::Some(ref x) => x,
-        }
-    }
-}
-
-impl<'a, T: 'a> DerefMut for DualPivotSort<'a, T> {
-    #[inline(always)]
-    fn deref_mut(&mut self) -> &mut DualPivotSortData<'a, T> {
-        match self {
-            &mut DualPivotSort::None => unsafe { unreachable() },
-            &mut DualPivotSort::Some(ref mut x) => x,
-        }
-    }
-}
-
-impl<'a, T: 'a> Drop for DualPivotSort<'a, T> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.done();
-        unsafe {
-            ptr::write(self, DualPivotSort::None);
-        }
-    }
-}
-
-fn dual_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivots: (usize, usize, usize, usize, usize),
-                                                 compare: &C, rec: u32, heapsort_depth: u32) {
-    let n = v.len();
-    let (e1, e2, _, e4, e5) = pivots;
-    let (less, great);
-
-    unsafe {
-        let mut this = DualPivotSort::new(DualPivotSortData{
-            pivot1: ptr::read(v.get_unchecked(e2)),
-            pivot2: ptr::read(v.get_unchecked(e4)),
-            less: 0,
-            great: n - 1,
-            v: v,
-        });
-        {
-            let mut this: &mut DualPivotSortData<T> = &mut *this;
-
-            // The first and last elements to be sorted are moved to the locations formerly occupied by the
-            // pivots. When partitioning is complete, they are swapped back, and not sorted again.
-            copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(e2));
-            copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(e4));
-
-            // Skip elements which are less or greater than the pivot values.
-            this.less += 1;
-            unsafe_swap(this.v, e1, this.less);
-            this.less += 1;
-            this.great -= 1;
-            unsafe_swap(this.v, e5, this.great);
-            this.great -= 1;
-            while compare(this.v.get_unchecked(this.less), &this.pivot1) == Less { this.less += 1; }
-            while compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
-
-            // Partitioning
-            let mut k = this.less;
-            while k <= this.great {
-                if compare(this.v.get_unchecked(k), &this.pivot1) == Less {
-                    unsafe_swap(this.v, this.less, k);
-                    this.less += 1;
-                } else if compare(this.v.get_unchecked(k), &this.pivot2) == Greater {
-                    if compare(this.v.get_unchecked(this.great), &this.pivot1) == Less {
-                        let vk = ptr::read(this.v.get_unchecked(k));
-                        copy(this.v.get_unchecked(this.less), this.v.get_unchecked_mut(k));
-                        copy(this.v.get_unchecked(this.great), this.v.get_unchecked_mut(this.less));
-                        copy(&vk, this.v.get_unchecked_mut(this.great));
-                        forget(vk);
-                        this.less += 1;
-                    } else {
-                        unsafe_swap(this.v, this.great, k);
-                    }
-                    this.great -= 1;
-                    while k < this.great && compare(this.v.get_unchecked(this.great), &this.pivot2) == Greater { this.great -= 1; }
+/// The general quick sort algorithm, that tries to handle all kinds of arrays sensibly
+///
+///  * For arrays with very few elements, it just switches to insertion sort.
+///  * For most random arrays, it partitions the array into four partitions using three pivots.
+///  * For arrays with the same element may times, it partitions the array into three partitions
+///    using that element as the pivot.
+///  * For arrays that cause it to recurse too may times, it switches to heapsort.
+fn introsort<T, C: Fn(&T, &T) -> Ordering>(mut v: &mut [T], compare: &C, mut rec: u32, heapsort_depth: u32) {
+    loop {
+        if maybe_insertion_sort(v, compare) { return };
+        if rec > heapsort_depth { return heapsort(v, compare) };
+        let n = v.len();
+        // Pivot selection.
+        macro_rules! maybe_swap(
+            ($compare: expr, $v: expr, $a: expr, $b: expr) => {
+                if compare_idxs($v, *$a, *$b, $compare) == Greater {
+                    swap($a, $b);
                 }
-                k += 1;
             }
-            less = this.less;
-            great = this.great;
+        );
+        // Medians-of-seven pivot selection.
+        let mut e3 = n / 2;
+        let mut e1 = e3 / 2;
+        let mut e0 = e1 / 2;
+        let mut e5 = e3 + e1;
+        let mut e2 = e1 + e0;
+        let mut e4 = e3 + e0;
+        let mut e6 = e5 + e0;
+        unsafe {
+            maybe_swap!(compare, v, &mut e0, &mut e4);
+            maybe_swap!(compare, v, &mut e1, &mut e5);
+            maybe_swap!(compare, v, &mut e2, &mut e6);
+            maybe_swap!(compare, v, &mut e0, &mut e2);
+            maybe_swap!(compare, v, &mut e1, &mut e3);
+            maybe_swap!(compare, v, &mut e4, &mut e6);
+            maybe_swap!(compare, v, &mut e2, &mut e4);
+            maybe_swap!(compare, v, &mut e3, &mut e5);
+            maybe_swap!(compare, v, &mut e0, &mut e1);
+            maybe_swap!(compare, v, &mut e2, &mut e3);
+            maybe_swap!(compare, v, &mut e4, &mut e5);
+            maybe_swap!(compare, v, &mut e1, &mut e4);
+            maybe_swap!(compare, v, &mut e3, &mut e6);
+            maybe_swap!(compare, v, &mut e1, &mut e2);
+            maybe_swap!(compare, v, &mut e3, &mut e4);
+            maybe_swap!(compare, v, &mut e5, &mut e6);
         }
-        this.done();
-        forget(this);
+        // Thin or fat partitioning?
+        let mut equal = None;
+        if compare(&v[e1], &v[e3]) == Equal {
+            equal = Some(e1);
+        }
+        if compare(&v[e3], &v[e5]) == Equal {
+            equal = Some(e5);
+        }
+        // The quicksort algorithm, complete with fake recursion optimization.
+        let v_ = v;
+        v = if let Some(pivot) = equal {
+            let (va, vb) = fat_partition(v_, pivot, compare);
+            if va.len() > vb.len() {
+                introsort(vb, compare, rec + 1, heapsort_depth);
+                va
+            } else {
+                introsort(va, compare, rec + 1, heapsort_depth);
+                vb
+            }
+        } else {
+            let (mut va, mut vb, mut vc, mut vd) = thin_partition(v_, e1, e3, e5, compare);
+            macro_rules! maybe_swap_len(
+                ($a: expr, $b: expr) => {
+                    if $a.len() > $b.len() {
+                        swap($a, $b);
+                    }
+                }
+            );
+            maybe_swap_len!(&mut va, &mut vb);
+            maybe_swap_len!(&mut vc, &mut vd);
+            maybe_swap_len!(&mut va, &mut vc);
+            maybe_swap_len!(&mut vb, &mut vd);
+            maybe_swap_len!(&mut vb, &mut vc);
+            introsort(va, compare, rec + 1, heapsort_depth);
+            introsort(vb, compare, rec + 1, heapsort_depth);
+            introsort(vc, compare, rec + 1, heapsort_depth);
+            vd
+        };
+        rec += 1;
     }
-
-    // Sort the left, right, and center parts.
-    introsort(&mut v[..less - 1], compare, rec + 1, heapsort_depth);
-    introsort(&mut v[less..great + 1], compare, rec + 1, heapsort_depth);
-    introsort(&mut v[great + 2..], compare, rec + 1, heapsort_depth);
 }
 
-fn single_pivot_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, compare: &C, rec: u32, heapsort_depth: u32) {
-    let (l, r) = fat_partition(v, pivot, compare);
+/// Three-pivot partition, based on http://epubs.siam.org/doi/pdf/10.1137/1.9781611973198.6
+///
+/// Partition elements, using `p`, `q`, and `r` all as pivots.
+/// After partitioning, the array looks like the following:
+///
+///     aaabbbbccccdddd
+///
+/// where `a` is less than or equal to `p`, `b` is between `p` and `q` inclusive, `c` is between
+/// `q` and `r` inclusive, and `d` is greater than or equal to `r`. Notice that we don't try to
+/// handle arrays with a lot of elements equal to the pivot intelligently; that's what the fat
+/// partition algorithm is for.
+fn thin_partition<'a, T, C: Fn(&T, &T) -> Ordering>(v: &'a mut [T], p: usize, q: usize, r: usize, compare: &C) -> (&'a mut [T], &'a mut [T], &'a mut [T], &'a mut [T])  {
     let n = v.len();
-    if l > 1 {
-        introsort(&mut v[..l], compare, rec + 1, heapsort_depth);
-    }
-    if r > 1 {
-        introsort(&mut v[n - r..], compare, rec + 1, heapsort_depth);
-    }
+    // Perform the partition.
+    let (a, b, d) = unsafe {
+        unsafe_swap(v, p, 0);
+        unsafe_swap(v, q, 1);
+        unsafe_swap(v, r, n - 1);
+        let (p, q, r) = (0, 1, n - 1);
+        // The debug asserts are commented out because they give spurious errors when testing with
+        // a broken comparator.
+        //debug_assert!(compare_idxs(v, p, q, compare) != Greater);
+        //debug_assert!(compare_idxs(v, q, r, compare) != Greater);
+        let (mut a, mut b, mut c, mut d) = (2, 2, n - 2, n - 2);
+        'outer: while b <= c {
+            if compare_idxs(v, b, q, compare) == Greater {
+                while compare_idxs(v, c, q, compare) == Greater {
+                    if compare_idxs(v, c, r, compare) == Greater {
+                        unsafe_swap(v, c, d);
+                        d -= 1;
+                    }
+                    //debug_assert!(compare_idxs(v, c, q, compare) == Greater);
+                    c -= 1;
+                    if b > c {
+                        break 'outer;
+                    }
+                }
+                unsafe_swap(v, b, c);
+                if compare_idxs(v, c, r, compare) == Greater {
+                    unsafe_swap(v, c, d);
+                    d -= 1;
+                }
+                //debug_assert!(compare_idxs(v, c, q, compare) == Greater);
+                c -= 1;
+                if b > c {
+                    break 'outer;
+                }
+            }
+            if compare_idxs(v, b, p, compare) == Less {
+                unsafe_swap(v, a, b);
+                a += 1;
+            }
+            b += 1;
+        }
+        // And swap the pivots into place.
+        a -= 1;
+        unsafe_swap(v, a, q);
+        d += 1;
+        unsafe_swap(v, d, r);
+        (a, b, d)
+    };
+    // Slice them up.
+    let (vabc, vd) = v.split_at_mut(d + 1);
+    let (vab, vc) = vabc.split_at_mut(b);
+    let (va, vb) = vab.split_at_mut(a);
+    (va, vb, vc, vd)
 }
 
 /// Partitions elements, using the element at `pivot` as pivot.
 /// After partitioning, the array looks as following:
 /// <<<<<==>>>
-/// Return (number of < elements, number of > elements)
-fn fat_partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, compare: &C) -> (usize, usize)  {
+fn fat_partition<'a, T, C: Fn(&T, &T) -> Ordering>(v: &'a mut [T], pivot: usize, compare: &C) -> (&'a mut [T], &'a mut [T])  {
     let mut a = 0;
     let mut b = a;
     let mut c = v.len() - 1;
@@ -296,17 +223,42 @@ fn fat_partition<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], pivot: usize, compar
     let r = min(d - c, n - 1 - d);
     unsafe { swap_many(v, b, n - r, r); }
 
-    return (b - a, d - c);
+    let vb = v.split_at_mut(n - (d - c));
+    let va = vb.0.split_at_mut(b - a);
+    (va.0, vb.1)
 }
 
-unsafe fn swap_many<T>(v: &mut [T], a: usize, b: usize, n: usize) {
-    let mut i = 0;
+/// Insertion sort, if the slice is very small.
+fn maybe_insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) -> bool {
+    let n = v.len();
+    if n <= 1 {
+        return true;
+    }
+
+    let threshold = min(MAX_INSERTION_SORT_ELEMS,
+                        max(MIN_QUICKSORT_ELEMS, INSERTION_SORT_FACTOR / size_of::<T>()));
+    if n <= threshold {
+        insertion_sort(v, compare);
+        return true;
+    }
+    return false;
+}
+
+/// Sort the array with a constant space usage, slowly if it happens to be a very large array.
+pub fn insertion_sort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
+    let mut i = 1;
+    let n = v.len();
     while i < n {
-        unsafe_swap(v, a + i, b + i);
+        let mut j = i;
+        while j > 0 && unsafe { compare_idxs(v, j-1, j, compare) } == Greater {
+            unsafe { unsafe_swap(v, j, j-1); }
+            j -= 1;
+        }
         i += 1;
     }
 }
 
+/// Sort using the heap sort algorithm; the dumb sorting algorithm that has no pathological case.
 #[cold]
 #[inline(never)]
 pub fn heapsort<T, C: Fn(&T, &T) -> Ordering>(v: &mut [T], compare: &C) {
@@ -424,6 +376,16 @@ impl<'a, T: 'a> Drop for Siftdown<'a, T> {
             copy(self.new.as_ref().unchecked_unwrap(), self.v.get_unchecked_mut(self.pos));
             ptr::write(&mut self.new, None);
         }
+    }
+}
+
+// Utilities.
+
+unsafe fn swap_many<T>(v: &mut [T], a: usize, b: usize, n: usize) {
+    let mut i = 0;
+    while i < n {
+        unsafe_swap(v, a + i, b + i);
+        i += 1;
     }
 }
 
