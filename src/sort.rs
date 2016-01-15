@@ -121,7 +121,7 @@ fn introsort<T, C: Fn(&T, &T) -> Ordering>(mut v: &mut [T], compare: &C, mut rec
 /// Partition elements, using `p`, `q`, and `r` all as pivots.
 /// After partitioning, the array looks like the following:
 ///
-///     aaabbbbccccdddd
+/// `aaabbbbccccdddd`
 ///
 /// where `a` is less than or equal to `p`, `b` is between `p` and `q` inclusive, `c` is between
 /// `q` and `r` inclusive, and `d` is greater than or equal to `r`. Notice that we don't try to
@@ -198,7 +198,8 @@ fn thin_partition<'a, T, C: Fn(&T, &T) -> Ordering>(v: &'a mut [T], p: usize, q:
 
 /// Partitions elements, using the element at `pivot` as pivot.
 /// After partitioning, the array looks as following:
-/// <<<<<==>>>
+///
+/// `<<<<<==>>>`
 fn fat_partition<'a, T, C: Fn(&T, &T) -> Ordering>(v: &'a mut [T], pivot: usize, compare: &C) -> (&'a mut [T], &'a mut [T])  {
     let mut a = 0;
     let mut b = a;
