@@ -1,4 +1,5 @@
-# quickersort #
+quickersort
+===========
 
 [![Build Status](https://travis-ci.org/notriddle/quickersort.svg)](https://travis-ci.org/notriddle/quickersort)
 [![Crates.IO](https://img.shields.io/crates/v/quickersort.svg)](https://crates.io/crates/quickersort)
@@ -7,15 +8,10 @@
 
 This is an implementation of the introsort sorting algorithm.
 
-Credit where it is due, this is a fork of [veddan/rust-introsort], that works
-with stable Rust (and, thus, does not work with `#[no_std]`).
-
-[veddan/rust-introsort]: https://github.com/veddan/rust-introsort
-
 To use with cargo, add the following to your `Cargo.toml`:
 ```toml
 [dependencies]
-quickersort = "1.0.0"
+quickersort = "1.1.0"
 ```
 and in your crate root, add
 ```rust
@@ -47,7 +43,7 @@ fn main() {
 Unlike the standard library sort function, introsort is _not_ a stable sort.
 
 ## Details ##
-At its heart, it is a dual-pivot quicksort.
+At its heart, it is a triple-pivot quicksort.
 For partition with many equal elements, it will instead use a single-pivot quicksort optimized for this case.
 It detects excessive recursion during quicksort and switches to heapsort if need be, guaranteeing O(n log(n)) runtime on all inputs.
 For small partitions it uses insertion sort instead of quicksort.
